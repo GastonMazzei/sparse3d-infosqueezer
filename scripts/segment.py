@@ -13,6 +13,11 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from segmentHelper import (
+			straighten_pcd,
+			twist_back,
+				)
+
 
 # Define a function that adds walls
 def add_outer_walls(v):
@@ -22,23 +27,27 @@ def add_outer_walls(v):
 	return v			
 
 # Open file
-if False:
-	df = pd.read_csv('raw_data/pointclouds.csv')
-	xyz = df.loc[df.groupby(['id'])['q'].idxmax()]
-	HARDCODED_THRESHOLD = 0.001
-	results = xyz[xyz['q'] > HARDCODED_THRESHOLD][['x','z','y']].to_numpy().astype('float')
-	ptcloud = results.copy()
-	#ptcloud[:,0] = results[:,2].copy()
-	#ptcloud[:,2] = results[:,0].copy()
-	ptcloud[:,2] *= -1
+def create_pcd():
+	if False:
+		df = pd.read_csv('raw_data/pointclouds.csv')
+		xyz = df.loc[df.groupby(['id'])['q'].idxmax()]
+		HARDCODED_THRESHOLD = 0.001
+		results = xyz[xyz['q'] > HARDCODED_THRESHOLD][['x','z','y']].to_numpy().astype('float')
+		ptcloud = results.copy()
+		#ptcloud[:,0] = results[:,2].copy()
+		#ptcloud[:,2] = results[:,0].copy()
+		ptcloud[:,2] *= -1
 
-	pcd = o3d.geometry.PointCloud()
-	pcd.points = o3d.utility.Vector3dVector(ptcloud)
-else:
-	input_filename = 'raw_data/original_pcd_aligned.ply'
-	pcd = o3d.io.read_point_cloud(input_filename) 
+		pcd = o3d.geometry.PointCloud()
+		pcd.points = o3d.utility.Vector3dVector(ptcloud)
+	else:
+		input_filename = 'raw_data/original_pcd.ply'
+		pcd = o3d.io.read_point_cloud(input_filename) 
+	return pcd
 
 
+# Create pcd
+pcd = create_pcd()
 
 # Try to write data as "x y z" in a file
 if 'x_y_z_for_line_segmentation.txt' not in os.listdir('raw_data'):
@@ -60,23 +69,28 @@ def plane_segmenter(pcd, draw=False):
 	outlier_cloud.paint_uniform_color([0.5, 0.5, 0])
 	if draw: o3d.visualization.draw_geometries([inlier_cloud])#, outlier_cloud])
 	return np.asarray(inlier_cloud.points),outlier_cloud,(a,b,c,d)
+
+# Align PCD with the x,y,z axes so that condition [1] is easier to write,
+# and in the process retrieve the 'op' alignment operator to use later in twist_back some lines below
+pcd, op = straighten_pcd(pcd)
+
 planes = []
 excluded = [] 
-for _ in range(100):
+for _ in range(100): # Arbitrary number of runs = 100
 	backup_pcd = np.asarray(pcd.points)
 	np.random.shuffle(backup_pcd)
 	try:
-	#if True:
 		temp, pcd, planeParams = plane_segmenter(pcd, False)
 		# Filter by number of points
 		if len(np.asarray(pcd.points)) < 30: continue
-		# Filter by direction of the plane
-		if abs(planeParams[1]) > 0.95 and False: 
-			pcd.points = o3d.utility.Vector3dVector(backup_pcd)
-			continue
-		planes.append(temp.copy())
+		# Filter by condition [1], referenced above
+		if (           # C O N D I T I O N [1]
+			(abs(planeParams[0]) < 0.2 and abs(planeParams[1]) < 0.2) or 
+			(abs(planeParams[1]) < 0.2 and abs(planeParams[2]) < 0.2) or
+			False #(abs(planeParams[2]) < 0.2 and abs(planeParams[0]) < 0.2)
+			):
+			planes.append(twist_back(temp,op))
 	except: break
-	#else: break
 try:
 	os.system(f'rm -r planes')
 except: pass
@@ -90,12 +104,13 @@ for p in planes:
 	o3d.io.write_point_cloud(f"planes/segmented_plane{c}.ply", pcd_out)
 	c+=1
 
-
-
-
+sys.exit(1)
 
 # Exit prematurely, testing.
-sys.exit(1)
+#sys.exit(1)
+# Else re-create the pcd
+pcd = create_pcd()
+
 
 def filter_labels(labels, MIN_ACCEPTED_N=30):
 	# Count cluster appearances and set to noise those that dont have enough points
