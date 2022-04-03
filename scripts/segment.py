@@ -49,14 +49,21 @@ def create_pcd():
 # Create pcd
 pcd = create_pcd()
 
+#*************************************************************************
+# ***************************LINE DETECTOR********************************
+#*************************************************************************
 # Try to write data as "x y z" in a file
-if 'x_y_z_for_line_segmentation.txt' not in os.listdir('raw_data'):
-	with open('raw_data/x_y_z_for_line_segmentation.txt','w') as file:
-		for v in np.asarray(pcd.points):
-			file.write(f'{v[0]} {v[1]} {v[2]}\n')
+#if 'x_y_z_for_line_segmentation.txt' not in os.listdir('3DLineDetection'):
+with open('3DLineDetection/x_y_z_for_line_segmentation.txt','w') as file:
+	for v in np.asarray(pcd.points):
+		file.write(f'{v[0]} {v[1]} {v[2]}\n')
+# Compute lines
+os.system(f'(cd 3DLineDetection; python3 tryParams.py)') 
+# Extract ply files
+os.system(f'(cd 3DLineDetection; python3 postLoad.py)') 
 
 
-# Useless plane detector
+# Useless plane detector, by Open3D
 def plane_segmenter(pcd, draw=False):
 	plane_model, inliers = pcd.segment_plane(distance_threshold=0.05,
 		                                 ransac_n=100,
@@ -70,133 +77,151 @@ def plane_segmenter(pcd, draw=False):
 	if draw: o3d.visualization.draw_geometries([inlier_cloud])#, outlier_cloud])
 	return np.asarray(inlier_cloud.points),outlier_cloud,(a,b,c,d)
 
-# Align PCD with the x,y,z axes so that condition [1] is easier to write,
-# and in the process retrieve the 'op' alignment operator to use later in twist_back some lines below
-pcd, op = straighten_pcd(pcd)
 
-planes = []
-excluded = [] 
-for _ in range(100): # Arbitrary number of runs = 100
-	backup_pcd = np.asarray(pcd.points)
-	np.random.shuffle(backup_pcd)
+O3D_PLANE_DETECTORS = [False,True][0]
+
+if O3D_PLANE_DETECTORS:
+
+	# Align PCD with the x,y,z axes so that condition [1] is easier to write,
+	# and in the process retrieve the 'op' alignment operator to use later in twist_back some lines below
+	pcd, op = straighten_pcd(pcd)
+
+	planes = []
+	excluded = [] 
+	for _ in range(100): # Arbitrary number of runs = 100
+		backup_pcd = np.asarray(pcd.points)
+		np.random.shuffle(backup_pcd)
+		try:
+			temp, pcd, planeParams = plane_segmenter(pcd, False)
+			# Filter by number of points
+			if len(np.asarray(pcd.points)) < 30: continue
+			# Filter by condition [1], referenced above
+			if (           # C O N D I T I O N [1]
+				(abs(planeParams[0]) < 0.2 and abs(planeParams[1]) < 0.2) or 
+				(abs(planeParams[1]) < 0.2 and abs(planeParams[2]) < 0.2) or
+				False #(abs(planeParams[2]) < 0.2 and abs(planeParams[0]) < 0.2)
+				):
+				planes.append(twist_back(temp,op))
+		except: break
 	try:
-		temp, pcd, planeParams = plane_segmenter(pcd, False)
-		# Filter by number of points
-		if len(np.asarray(pcd.points)) < 30: continue
-		# Filter by condition [1], referenced above
-		if (           # C O N D I T I O N [1]
-			(abs(planeParams[0]) < 0.2 and abs(planeParams[1]) < 0.2) or 
-			(abs(planeParams[1]) < 0.2 and abs(planeParams[2]) < 0.2) or
-			False #(abs(planeParams[2]) < 0.2 and abs(planeParams[0]) < 0.2)
-			):
-			planes.append(twist_back(temp,op))
-	except: break
-try:
-	os.system(f'rm -r planes')
-except: pass
-try:
-	os.mkdir(f'planes')
-except: pass
-c=0
-for p in planes:
-	pcd_out = o3d.geometry.PointCloud()
-	pcd_out.points = o3d.utility.Vector3dVector(p)
-	o3d.io.write_point_cloud(f"planes/segmented_plane{c}.ply", pcd_out)
-	c+=1
-
-sys.exit(1)
-
-# Exit prematurely, testing.
-#sys.exit(1)
-# Else re-create the pcd
-pcd = create_pcd()
+		os.system(f'rm -r planes')
+	except: pass
+	try:
+		os.mkdir(f'planes')
+	except: pass
+	c=0
+	for p in planes:
+		pcd_out = o3d.geometry.PointCloud()
+		pcd_out.points = o3d.utility.Vector3dVector(p)
+		o3d.io.write_point_cloud(f"planes/segmented_plane{c}.ply", pcd_out)
+		c+=1
 
 
-def filter_labels(labels, MIN_ACCEPTED_N=30):
-	# Count cluster appearances and set to noise those that dont have enough points
-	d = dict([(i,0) for i in np.unique(labels)])
-	for number in labels:
-	    d[number]+=1
-	labels = [l if d[l]>MIN_ACCEPTED_N else -1 for l in labels]
-	return np.asarray(labels)
+
+O3D_DBSCAN_CLUSTERING = [False,True][1]
+
+if O3D_DBSCAN_CLUSTERING:
+
+	# Exit prematurely, testing.
+	#sys.exit(1)
+	# Else re-create the pcd
+	pcd = create_pcd()
 
 
-MIN_ACCEPTED_NUMBER_OF_POINTS = 30
-
-# EXPLORING
-EXPLORING = [False,True][1]
-if EXPLORING:
-	Nclusters = []
-	ALL_EPS = np.linspace(0.01,0.8,30)
-	ALL_MIN_POINTS = [2 + 4 * j for j in range(20)]
-	DISPLAY = False
-	for EPS in ALL_EPS:
-		for min_points in ALL_MIN_POINTS:
-			labels = np.array(
-				pcd.cluster_dbscan(eps=EPS, min_points=min_points, print_progress=True))
-			max_label = labels.max()
-
-		
-			labels = filter_labels(labels, MIN_ACCEPTED_NUMBER_OF_POINTS)
-
-			print(f"for eps = {EPS} and min_points = {min_points} point cloud has {len(set(labels))+1} clusters")
-			if DISPLAY:
-				colors = plt.get_cmap("tab20")(labels / (max_label if max_label > 0 else 1))
-				colors[labels < 0] = 0
-				pcd.colors = o3d.utility.Vector3dVector(colors[:, :3])
-				o3d.visualization.draw_geometries([pcd])
-			Nclusters.append(len(set(labels))+1)
-	result = np.asarray(Nclusters).reshape(len(ALL_EPS), len(ALL_MIN_POINTS))
-	plt.imshow(result); plt.colorbar(); plt.show()
-	target_i, target_j = [int(x) for x in input('Please write the comma-separated ixes, starting w the vertical dimension. E.g. "11,5"').split(',')]
-	print(f'Target ixes are {target_i},{target_j}')
+	def filter_labels(labels, MIN_ACCEPTED_N=30):
+		# Count cluster appearances and set to noise those that dont have enough points
+		d = dict([(i,0) for i in np.unique(labels)])
+		for number in labels:
+		    d[number]+=1
+		labels = [l if d[l]>MIN_ACCEPTED_N else -1 for l in labels]
+		return np.asarray(labels)
 
 
-# COMMITTING TO ONE VALUE
-#eps = 0.3 and min_points = 10 40 clusters
-# eps = 0.3 and min_points = 25 point 20 clusters
-#eps = 0.3 and min_points = 1 point cloud has 156 clusters
-#for eps = 0.5 and min_points = 50 point cloud has 11 clusters
-#eps = 0.1 and min_points = 1
-#eps = 0.2 and min_points = 7 104 clusters
-def search(ALL_EPS,ALL_MIN_POINTS,result,target_i=11, target_j=5):
-	HARDCODED_IXES = [False, True][1]
-	for i,_EPS in enumerate(ALL_EPS):
-		for j,_min_points in enumerate(ALL_MIN_POINTS):
-			# Look for specific ixes
-			if HARDCODED_IXES:
-				if i==target_i and j==target_j: return _EPS,_min_points
-			else:
-				# Look for the min
-				if result[i,j] == np.min(result):
-					print(f'chosen ixes are {i} and {j}. Min is {np.min(result)}')
-					return _EPS, _min_points
+	MIN_ACCEPTED_NUMBER_OF_POINTS = 30
 
-EPS, min_points = search(ALL_EPS, ALL_MIN_POINTS, result, target_i, target_j)
-labels = np.array(pcd.cluster_dbscan(eps=EPS, min_points=min_points, print_progress=True))
-labels = filter_labels(labels, MIN_ACCEPTED_NUMBER_OF_POINTS)
-max_label = labels.max()
+	# EXPLORING
+	EXPLORING = [False,True][1]
+	if EXPLORING:
+		Nclusters = []
+		ALL_EPS = np.linspace(0.01,0.8,15)
+		ALL_MIN_POINTS = [2, 8, 14, 20, 26, 32, 38, 44, 50, 56]
+		DISPLAY = False
+		for EPS in ALL_EPS:
+			for min_points in ALL_MIN_POINTS:
+				labels = np.array(
+					pcd.cluster_dbscan(eps=EPS, min_points=min_points, print_progress=True))
+				max_label = labels.max()
+
+			
+				labels = filter_labels(labels, MIN_ACCEPTED_NUMBER_OF_POINTS)
+
+				print(f"for eps = {EPS} and min_points = {min_points} point cloud has {len(set(labels))+1} clusters")
+				if DISPLAY:
+					colors = plt.get_cmap("tab20")(labels / (max_label if max_label > 0 else 1))
+					colors[labels < 0] = 0
+					pcd.colors = o3d.utility.Vector3dVector(colors[:, :3])
+					o3d.visualization.draw_geometries([pcd])
+				Nclusters.append(len(set(labels))+1)
+		result = np.asarray(Nclusters).reshape(len(ALL_EPS), len(ALL_MIN_POINTS))
+		if DISPLAY:
+			plt.imshow(result); plt.colorbar(); plt.show()
+			target_i, target_j = [int(x) for x in input('Please write the comma-separated ixes, starting w the vertical dimension. E.g. "11,5"').split(',')]
+		else:
+			def compute_optimal(data):
+				"""
+				Return the i,j indexes that maximize the data
+				"""
+				ix = np.argmax(data)
+				return ix // data.shape[1], ix % data.shape[1]				
+			target_i, target_j = compute_optimal(result)
+		print(f'Target ixes are {target_i},{target_j}')
 
 
-try:
-	os.system(f'rm -r segmented')
-except: pass
+	# COMMITTING TO ONE VALUE
+	#eps = 0.3 and min_points = 10 40 clusters
+	# eps = 0.3 and min_points = 25 point 20 clusters
+	#eps = 0.3 and min_points = 1 point cloud has 156 clusters
+	#for eps = 0.5 and min_points = 50 point cloud has 11 clusters
+	#eps = 0.1 and min_points = 1
+	#eps = 0.2 and min_points = 7 104 clusters
+	def search(ALL_EPS,ALL_MIN_POINTS,result,target_i=11, target_j=5):
+		HARDCODED_IXES = [False, True][1]
+		for i,_EPS in enumerate(ALL_EPS):
+			for j,_min_points in enumerate(ALL_MIN_POINTS):
+				# Look for specific ixes
+				if HARDCODED_IXES:
+					if i==target_i and j==target_j: return _EPS,_min_points
+				else:
+					# Look for the min
+					if result[i,j] == np.min(result):
+						print(f'chosen ixes are {i} and {j}. Min is {np.min(result)}')
+						return _EPS, _min_points
+
+	EPS, min_points = search(ALL_EPS, ALL_MIN_POINTS, result, target_i, target_j)
+	labels = np.array(pcd.cluster_dbscan(eps=EPS, min_points=min_points, print_progress=True))
+	labels = filter_labels(labels, MIN_ACCEPTED_NUMBER_OF_POINTS)
+	max_label = labels.max()
 
 
-try:
-	os.mkdir(f'segmented')
-except: pass
+	try:
+		os.system(f'rm -r segmented')
+	except: pass
 
-print(list(set(labels)))
-# Save the point clouds per room :-)
-c=0
-for i in range(max_label + 1):
-	sub_ptcloud = np.asarray(pcd.points)[labels == i]
-	if len(sub_ptcloud)==0: continue
-	pcd_out = o3d.geometry.PointCloud()
-	pcd_out.points = o3d.utility.Vector3dVector(sub_ptcloud)
-	o3d.io.write_point_cloud(f"segmented/segmented_object{c}.ply", pcd_out)
-	c+=1
+
+	try:
+		os.mkdir(f'segmented')
+	except: pass
+
+	print(list(set(labels)))
+	# Save the point clouds per room :-)
+	c=0
+	for i in range(max_label + 1):
+		sub_ptcloud = np.asarray(pcd.points)[labels == i]
+		if len(sub_ptcloud)==0: continue
+		pcd_out = o3d.geometry.PointCloud()
+		pcd_out.points = o3d.utility.Vector3dVector(sub_ptcloud)
+		o3d.io.write_point_cloud(f"segmented/segmented_object{c}.ply", pcd_out)
+		c+=1
 
 
 

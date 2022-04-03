@@ -4,6 +4,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import open3d as o3d
 
+if 0 == os.path.getsize("out.txtlines.txt"):
+	try:
+		os.system(f'rm -r segmentedLines')
+		os.system('mkdir segmentedLines')
+	except: pass
+	sys.exit(0)
+
 # Define verbosity
 DISPLAY = [False, True][0]
 
